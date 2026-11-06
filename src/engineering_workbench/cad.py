@@ -28,7 +28,11 @@ from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer
 from OCP.STEPControl import STEPControl_AsIs
 from OCP.TCollection import TCollection_AsciiString, TCollection_ExtendedString
 from OCP.TDataStd import TDataStd_Name
-from OCP.TDF import TDF_Label, TDF_LabelSequence, TDF_Tool
+from OCP.TDF import TDF_Label, TDF_Tool
+try:
+    from OCP.collections import Sequence_TDF_Label as TDF_LabelSequence
+except ImportError:  # Compatibility with the original OCCT 7.8 proof environment.
+    from OCP.TDF import TDF_LabelSequence
 from OCP.TDocStd import TDocStd_Document
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS_Compound
@@ -199,7 +203,7 @@ class StepAssembly:
             shape = self.shape_tool.GetShape_s(label)
             bounds = Bnd_Box()
             BRepBndLib.AddOptimal_s(shape, bounds, False, False)
-            box = list(bounds.Get())
+            box = [*bounds.CornerMin().Coord(), *bounds.CornerMax().Coord()]
             properties = GProp_GProps()
             BRepGProp.VolumeProperties_s(shape, properties)
             occurrences.append({

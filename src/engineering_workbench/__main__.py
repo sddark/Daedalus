@@ -1,9 +1,9 @@
-"""Run the reproducible headless two-instance proof."""
+"""Daedalus STEP component movement proof and local Focus View."""
 
 from __future__ import annotations
 
 import argparse
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 import json
 import math
 from pathlib import Path
@@ -11,6 +11,15 @@ import platform
 import sys
 
 from .cad import StepAssembly, create_two_instance_fixture, file_sha256
+
+
+def kernel_binding() -> dict:
+    for package in ("cadquery-ocp-novtk", "cadquery-ocp"):
+        try:
+            return {"package": package, "version": version(package)}
+        except PackageNotFoundError:
+            continue
+    raise RuntimeError("No supported OCP distribution is installed")
 
 
 def _close(actual: list[float], expected: list[float], tolerance: float = 1e-6) -> bool:
@@ -54,7 +63,7 @@ def run_demo(output: Path) -> dict:
     report = {
         "status": "passed" if all(checks.values()) else "failed",
         "scope": "synthetic two-instance STEP assembly, one parent-local translation",
-        "kernel_binding": {"package": "cadquery-ocp", "version": version("cadquery-ocp")},
+        "kernel_binding": kernel_binding(),
         "platform": {"machine": platform.machine(), "python": platform.python_version()},
         "translation_mm": [10.0, 0.0, 0.0],
         "absolute_tolerance_mm": 1e-6,
@@ -71,7 +80,7 @@ def run_demo(output: Path) -> dict:
     (output / "placements.json").write_text(json.dumps({
         "schema_version": 1,
         "source_sha256": original_hash,
-        "kernel_binding_version": version("cadquery-ocp"),
+        "kernel_binding_version": kernel_binding()["version"],
         "units": "mm",
         "coordinate_convention": "right-handed; parent-local; column-vector 3x4 transforms",
         "occurrences": [{"id": item["id"], "path": item["path"], "name": item["name"], "matrix_3x4": item["matrix_3x4"]} for item in after["occurrences"]],
@@ -86,8 +95,16 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     demo = commands.add_parser("demo", help="Generate and verify a two-instance STEP movement")
     demo.add_argument("--output", type=Path, required=True, help="A new output directory; existing directories are refused")
+    viewer = commands.add_parser("serve", help="Open a local STEP Focus View in your browser")
+    viewer.add_argument("--port", type=int, default=8000, help="Loopback HTTP port (default: 8000)")
     arguments = parser.parse_args()
     try:
+        if arguments.command == "serve":
+            from .viewer import serve
+            if not 0 <= arguments.port <= 65535:
+                raise ValueError("Port must be between 0 and 65535")
+            serve(arguments.port)
+            return 0
         report = run_demo(arguments.output)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Error: {error}", file=sys.stderr)
