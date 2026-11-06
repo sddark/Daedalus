@@ -6,3 +6,5 @@ build/
 dist/
 demo-output/
 .runtime/
+node_modules/
+npm-debug.log*

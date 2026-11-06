@@ -1,159 +1,172 @@
-# Install and run the Daedalus STEP proof
+# Install and run Daedalus
 
-## Scope and prerequisites
+Daedalus is an experimental STEP assembly viewer and component mover. It runs a
+local Python server and opens in your browser. It is not a full CAD modeller,
+a public hosted service or a KiCad integration.
 
-This package is a command-line experiment, not an installable CAD desktop app or
-web viewer. It creates a synthetic two-instance assembly, moves one occurrence,
-exports STEP and verifies the result. It has no web deployment, login, server,
-Git checkpoint UI or KiCad workflow.
-
-Clone the public repository, then work in the directory containing `pyproject.toml`:
+## Get the source
 
 ```sh
 git clone https://github.com/sddark/Daedalus.git
 cd Daedalus
 ```
 
-You can also download and extract the source ZIP from the repository's Code menu.
-Git is only needed for the clone route; the proof itself does not yet create Git
-checkpoints. The experimental Python package and CLI still use the
-`engineering-workbench` name; the project and repository are named Daedalus.
+You may instead download and extract the repository's source ZIP. Run the
+commands below from the directory containing `pyproject.toml`.
 
-- **Tested environment:** Linux x86_64, CPython 3.12.14, glibc 2.41,
-  `cadquery-ocp==7.8.1.1.post1`, `vtk==9.3.1`.
-- **Declared Python range:** CPython 3.11–3.12. Only 3.12 has been tested here.
-  Python 3.13 is excluded because the pinned VTK 9.3.1 dependency publishes no
-  CPython 3.13 wheels, even though the pinned OCP release itself does.
-- **Published pinned Linux wheels:** x86_64 with glibc 2.31 or newer. Wheel
-  availability is a prerequisite, not a full application compatibility test.
-- Python must include `venv` and pip. If creating a venv fails, install the
-  appropriate Python venv/pip support through your operating system's normal
-  package manager before continuing.
-- The normal installation below needs access to PyPI for build dependencies,
-  OCP and VTK. These include sizeable native binary packages.
-- No C++ compiler, CMake, KiCad or separately installed system OCCT is needed for
-  the wheel-based path. Do not mix an arbitrary system OCCT library into the
-  pinned binding environment.
+The Python distribution remains named `engineering-workbench`; the primary CLI
+is now `daedalus`. The older `engineering-workbench` command remains an alias.
 
-macOS and Windows have published upstream wheels but have not been tested for
-this application. Raspberry Pi instructions are deliberately not offered below.
+## Supported dependency target
 
-## Linux x86_64 installation
+- 64-bit Linux x86_64 or ARM64/aarch64, with **glibc 2.28 or newer**.
+- **CPython 3.11 or 3.12**. Only 3.12 has been executed in the current test host.
+- `cadquery-ocp-novtk==8.0.1.1.0` and its pinned `cadquery-ocp-proxy` dependency.
+- A WebGL-capable browser for the UI. No Node.js, VTK, KiCad, compiler or
+  standalone OCCT installation is required for this wheel-based path.
 
-The following commands assume `python3.12` is available. Use a compatible Python
-interpreter explicitly rather than relying on an unknown system default.
+The app is tested on Linux x86_64. ARM64 wheels and their dependency resolution
+are verified, but actual Pi execution is still pending. macOS/Windows have not
+been tested for this application. 32-bit Pi OS and Alpine/musl are unsupported.
+
+**Create a fresh virtual environment.** Do not install the old `cadquery-ocp`
+package alongside `cadquery-ocp-novtk`; they both provide the `OCP` namespace.
+Do not silently reuse an environment from the earlier VTK-based proof.
+
+## Raspberry Pi 4B target
+
+Use **64-bit Raspberry Pi OS Bookworm / Debian 12 with Python 3.11**, or a
+64-bit glibc-based OS with an explicitly supported Python 3.11/3.12 interpreter.
+Do not assume a newer OS's default Python is in the supported range.
 
 ```sh
-python3.12 -m venv .venv
+uname -m
+python3 --version
+getconf GNU_LIBC_VERSION
+```
+
+On the Pi, expect `aarch64`, Python 3.11.x/3.12.x and glibc 2.28 or newer.
+For Bookworm, install these prerequisites if missing:
+
+```sh
+sudo apt update
+sudo apt install python3-venv python3-pip libgl1 libx11-6 libexpat1 zlib1g libstdc++6 libgcc-s1
+```
+
+The no-VTK OCP wheel still links graphics libraries such as libGL and libX11.
+A desktop/display-server session is not needed just to serve the app, but the
+shared libraries must load. See [ARM64_VERIFICATION.md](ARM64_VERIFICATION.md)
+for the dependency audit and what has and has not been tested.
+
+## Install in a fresh environment
+
+The commands use `python3.11` for the Pi Bookworm target. On the tested x86_64
+host, `python3.12` is used instead. Select the compatible interpreter explicitly.
+If `.venv` already exists from an older installation, use a new name instead of
+overwriting or deleting it.
+
+```sh
+python3.11 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install --only-binary=cadquery-ocp,vtk .
+python -m pip install --only-binary=cadquery-ocp-novtk,cadquery-ocp-proxy .
+python -m pip check
 ```
 
-The binary-only restriction makes pip fail clearly when the required native
-wheels are unavailable instead of attempting an unexpected source build.
-Installation must finish successfully before running the following checks.
+Initial installation needs PyPI network access and disk space for the native
+packages. The binary-only restriction makes unsupported architectures fail
+clearly instead of starting an untested source build. Once installed, the app
+and browser assets run without a CDN or external web service.
+
+## Verify the kernel and run the tests
 
 ```sh
-python -c "from importlib.metadata import version; from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox; print('OCP', version('cadquery-ocp')); print('Native kernel loaded:', not BRepPrimAPI_MakeBox(1, 2, 3).Shape().IsNull())"
-engineering-workbench --help
+python -c "from importlib.metadata import version; from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox; print('OCP', version('cadquery-ocp-novtk')); print('Native kernel loaded:', not BRepPrimAPI_MakeBox(1, 2, 3).Shape().IsNull())"
+daedalus --help
 python -m unittest discover -s tests -v
-engineering-workbench demo --output .runtime/demo-installed-01
+daedalus demo --output .runtime/proof-01
 ```
 
-Expected results:
+The native kernel check should print `True`, the tests should end with `OK`,
+and the demo should report **13/13 checks passed**. OCCT also prints STEP writer
+diagnostics. Choose a new output directory for each demo run, such as
+`.runtime/proof-02`; existing directories are intentionally refused.
 
-- Native kernel check prints `True`.
-- Help lists the `demo` command. There is no viewer/serve command.
-- The tests report **12 tests, OK**.
-- The demo exits successfully and reports **13/13 checks passed**.
+The demo produces `original.step`, `moved.step`, `placements.json` and `proof.json`.
+Its original input stays unchanged. Both boxes retain their 6000 mm³ volumes;
+only `Movable` changes position, from `[30,0,0]` to `[40,0,0]` mm.
 
-`python -m engineering_workbench demo --output ...` is equivalent to the
-installed `engineering-workbench demo` command.
-
-The demo refuses an existing output directory. For another run, choose a new
-path such as `.runtime/demo-installed-02`; do not delete previous results just
-to make the command succeed.
-
-## Inspect the output
-
-The chosen output directory contains:
-
-- `original.step`: generated immutable input.
-- `moved.step`: exported assembly after moving one instance.
-- `placements.json`: source hash, occurrence IDs and final parent-local transforms.
-- `proof.json`: explicit checks plus before/after/reimported geometry snapshots.
-
-Expected positions in millimetres are `Fixed=[0,0,0]` and `Movable=[40,0,0]`.
-Both boxes remain 10 × 20 × 30 mm, each with a volume of 6000 mm³. The proof checks
-the original source hash and preserves a shared part definition. This does not
-promise a lossless round trip for every STEP feature or file.
-
-## Run without installation in an already provisioned environment
-
-If the compatible OCP dependency is already installed, run from the source root:
+## Open the local viewer
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m unittest discover -s tests -v
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m engineering_workbench demo --output .runtime/demo-source-01
+daedalus serve
 ```
 
-This bypasses package installation; it does not install or validate missing
-dependencies. No pytest dependency is needed.
+Open **http://127.0.0.1:8000** in the browser on the same computer.
+A different port can be selected with `daedalus serve --port 8001`.
 
-## What installation testing actually covers
+1. Load the built-in example or choose a `.step`/`.stp` assembly, up to 20 MiB.
+2. Select a direct component in the viewport or list.
+3. Enter X/Y/Z offsets from its imported position, in millimetres along the
+   parent assembly's axes, then apply the move.
+4. Compare the original-position outline with the shaded current position.
+5. Export a new STEP download before stopping the server.
 
-The normal new-computer instructions above are the recommended package workflow,
-but a clean internet-based install has **not** been performed in this restricted
-execution environment.
+The session is kept in memory and a private temporary directory. Browser reloads
+can reconnect while the server runs. Closing the server discards the session.
+It does not save projects, update Git commits or edit your original file.
 
-Installation smoke testing passed in a separate local virtual environment with access
-to the already-installed system packages, then installs the project with
-`--no-index --no-deps --no-build-isolation`. This verifies package construction,
-imports, the console entry point, regression tests and the demo against the
-existing native dependencies. It does **not** independently validate downloading
-dependencies, fresh native library resolution or another machine's setup.
+Only one top-level assembly and its direct component occurrences are supported.
+A solitary solid and independent selection of nested children are not supported.
+The viewer rejects excessive display geometry instead of guaranteeing a maximum
+RAM budget. Native import can still consume substantial memory.
 
-Recorded result: package build/install, installed imports, console help, all
-12 tests and all 13 demo checks passed on the tested Linux x86_64/Python 3.12
-environment. No network package download or Pi execution was performed.
+## Opening the viewer from another computer
 
-## Raspberry Pi status
+The server intentionally binds only to loopback. For a Pi running the server,
+use SSH forwarding from your other computer, with your actual SSH account/host:
 
-**Do not use the current pin as a Pi installation recipe.** The pinned OCP
-7.8.1.1.post1 release lists no Linux ARM64 wheel. Its VTK 9.3.1 dependency also
-needs a compatible target build. Current OCP releases publish ARM64 wheels, but
-changing the version requires API and round-trip regression testing and a review
-of the complete dependency graph.
+```sh
+ssh -N -L 8000:127.0.0.1:8000 pi-user@pi-host
+```
 
-Before supporting a Pi 4B, select a compatible 64-bit OS/Python/dependency set,
-run the same tests on real ARM64 hardware and measure import/export time and
-peak RAM. No Pi performance claim, RAM requirement or maximum model size has
-been established. The x86_64 result is not a Pi benchmark.
+Then open **http://127.0.0.1:8000** on that computer. Keep the tunnel open. Use the
+same port at both ends because the viewer validates the Host header; if port
+8000 is occupied, use `--port 8001` on the Pi and 8001 at both tunnel endpoints.
+SSH access must already be configured by you. These instructions do not enable
+SSH, change firewall settings or expose the app publicly.
+
+Direct phone/LAN access, HTTPS, authentication and multi-user deployment are not
+implemented. Choose the access model before opening broader network access.
+
+## Verification limits
+
+A clean isolated Linux x86_64/Python 3.12 environment installed the new no-VTK
+runtime from PyPI. ARM64 Python 3.11/3.12 wheels and their complete runtime graph
+were downloaded and inspected. The original geometry proof passes with OCCT8.
+Final package, API and browser results are recorded in [VERIFICATION.md](VERIFICATION.md).
+
+No physical Pi installation, browser rendering, performance, peak-memory,
+thermal or usable-model-size measurement has been performed. Validate those on
+the actual Pi before relying on this for large or important work.
 
 ## Troubleshooting
 
-- **`No matching distribution found`:** check interpreter version, CPU
-  architecture and libc compatibility against the pinned wheels. Do not remove
-  the binary-only restriction and expect a Pi source build to work automatically.
-- **`ModuleNotFoundError: OCP`:** confirm the intended venv is active and the
-  dependency installation succeeded. Installing this project with `--no-deps`
-  is only appropriate when compatible dependencies are already present.
-- **Native shared-library import error:** retain the exact missing-library error
-  and resolve it for the target OS; the current smoke test does not establish a
-  universal list of system packages.
-- **`FileExistsError` for demo output:** choose a new directory.
-- **Unsupported assembly error:** the API currently requires exactly one
-  top-level assembly and edits only its immediate component occurrences.
-- **Source changed since import:** import it as a new source. The application
-  intentionally refuses to replay edits against changed input bytes.
+- **No matching distribution:** check 64-bit architecture, Python 3.11/3.12 and
+  glibc compatibility. Do not remove the binary-only restriction to force a build.
+- **Missing libGL/libX11/native library:** install the OS prerequisites above and
+  retain the exact error if another dependency remains missing.
+- **OCP import/API error:** ensure a fresh environment contains only the pinned
+  no-VTK OCP distribution and proxy, not a mixture of old/new bindings.
+- **Blank viewport/WebGL error:** enable browser graphics support or try a
+  supported browser. Actual Pi GPU behavior has not been validated here.
+- **HTTP 403:** use the printed loopback URL. For SSH forwarding, keep port
+  numbers identical. Reload for a fresh request token.
+- **HTTP 409 after moving:** another page changed the model; refresh its state
+  before applying another movement.
+- **Import rejected:** retain your source, check that it is a supported assembly,
+  or try a smaller model. Failed imports keep the previous session model.
+- **Existing demo directory:** choose a new output path.
 
-## Upstream references
-
-- [Pinned OCP files and platform tags](https://pypi.org/project/cadquery-ocp/7.8.1.1.post1/)
-- [Pinned VTK files and Python tags](https://pypi.org/project/vtk/9.3.1/)
-- [Current OCP releases](https://pypi.org/project/cadquery-ocp/)
-- [Open CASCADE license](https://occt3d.com/dev/doc/overview/html/occt_public_license.html)
-
-Preserve upstream notices before redistributing binaries. An application-code
-license for this starter has not yet been selected.
+Use trusted STEP files only. This local native parser is not a hardened upload
+service and has no process-isolation or hard native-operation timeout.

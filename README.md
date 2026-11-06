@@ -1,99 +1,109 @@
-# Daedalus: component-movement proof
+# Daedalus
 
-This experimental starter implements a **real, headless Open CASCADE STEP round
-trip**. It does not implement a web UI, Git checkpoint service or KiCad adapter.
-Product and UI details remain undecided. Raspberry Pi compatibility has not been
-verified, and the current dependency pin is not directly installable from a Linux
-ARM64 wheel.
+An experimental, local **STEP component viewer and mover** built on Open CASCADE.
+Import an assembly, select a component, enter its X/Y/Z offset, compare its old
+outline with its new position in one view, and export a new STEP file.
 
-For installation on another computer, see [INSTALL.md](INSTALL.md).
+The viewer uses exact CAD geometry for editing and export. Tessellated meshes
+are only for display. The imported source is preserved.
 
-## What works
+## Start here
 
-1. Generate a STEP assembly containing two instances of the same 10 × 20 × 30 mm box.
-2. Import the assembly with XCAF, preserving assembly references and names.
-3. Move only the `Movable` occurrence 10 mm along its parent's X axis.
-4. Export a new STEP and reimport it.
-5. Check placements, bounds, dimensions, volume, instance sharing and original-file integrity.
-
-`Fixed` remains at `[0, 0, 0]`; `Movable` changes from `[30, 0, 0]` to `[40, 0, 0]`.
-The source STEP is never rewritten. Each part remains 10 × 20 × 30 mm with volume
-6000 mm³. The exported STEP is a geometric round trip, not a byte-identical copy.
-
-## Run from source
-
-After installing the compatible dependencies described in [INSTALL.md](INSTALL.md),
-run these commands from the directory containing `pyproject.toml`:
+Follow [INSTALL.md](INSTALL.md), then run:
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m unittest discover -s tests -v
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m engineering_workbench demo --output .runtime/demo-new
+daedalus serve
 ```
 
-The demo intentionally refuses an existing output directory. Choose a new path for every run.
-OCCT prints its own STEP writer diagnostics before the summary. A successful
-demo reports `passed` with 13 of 13 checks passed.
+Open **http://127.0.0.1:8000** in a WebGL-capable browser. Choose a STEP file or
+load the built-in two-component example. The browser assets are bundled locally;
+there is no CDN or external service requirement at runtime.
 
-Outputs:
+## Focus View
 
-- `original.step`: immutable generated input.
-- `moved.step`: new exact-geometry STEP export.
-- `placements.json`: readable parent-local placement snapshot with source hash,
-  occurrence IDs and kernel version, ready for future Git checkpoint integration.
-- `proof.json`: before/after/reimported snapshots and explicit verification checks.
+- One 3D viewport with orbit, pan, zoom and fit controls.
+- Select a component in the model or component list.
+- Apply numeric X/Y/Z offsets in millimetres, relative to its imported placement
+  and measured along the parent assembly's axes.
+- Changed components retain an outline at their imported position. Their current
+  geometry is shaded in the same viewport.
+- Export the current assembly as a new STEP download.
 
-## Architecture and scope
+This is a **single, temporary editing session**. Reloading the page reconnects to
+the running session. Stopping the server discards it, so export changes first.
+There is no project persistence, Git history UI, parametric feature editing,
+rotation editing or KiCad workflow yet. The diff shows placement changes since
+import, not arbitrary geometry changes between unrelated STEP files.
 
-`src/engineering_workbench/cad.py` is the native-kernel adapter.
-`src/engineering_workbench/__main__.py` runs the self-contained demonstration.
-`tests/test_cad.py` and `tests/test_demo.py` contain 12 regression tests using
-Python's standard `unittest`; pytest is not required.
+## Supported scope
 
-The adapter accepts exactly one top-level XCAF assembly and edits only its
-immediate component occurrences, including whole subassemblies. Nested parts are
-not independently editable. A solitary solid or multiple free roots is rejected
-instead of silently flattening the model. Shared definitions remain untouched.
+The current adapter requires exactly one top-level STEP assembly and moves its
+immediate component occurrences. A whole direct subassembly can move; its nested
+parts cannot be selected and edited independently. A solitary solid or multiple
+free roots is rejected rather than silently flattened. Repeated components share
+one definition, so moving one occurrence does not alter its siblings.
 
-Occurrence IDs derive from the source file hash and imported occurrence path.
-They are stable for repeated imports of the same bytes with the tested importer,
-not across a replacement or re-exported source. Names are display labels, not IDs.
-The placement JSON records final absolute transforms; the proof's movement API
-accepts a parent-local translation delta. Rotation editing and replaying placement
-JSON are not implemented yet.
+Units are converted to millimetres. Box and curved-cylinder fixtures, including
+rotated placements, are tested. Broader exporter compatibility and inch-unit
+fixtures still need validation. Occurrence IDs are tied to the imported source
+bytes and occurrence paths, not guaranteed stable across re-exported files.
 
-Internal and export units are millimetres. This initial proof uses millimetre
-fixtures; inch-unit and complex real-world imports still need dedicated tests.
-Process-global OCCT STEP settings mean kernel jobs must run serially. This is a
-trusted local proof, not a hardened upload service or a thread-safe public API.
+The viewer accepts STEP files up to 20 MiB and at most 500 direct components.
+Display output, counting repeated instances, is capped at 200,000 triangles and 200,000 edge segments, with
+0.2 mm / 0.35 rad tessellation settings. These are payload limits, **not a native
+memory guarantee** or a promise that a model will fit every Pi.
 
-## Raspberry Pi deployment status
+## Raspberry Pi status
 
-This proof is tested on **x86_64**, not a Raspberry Pi. Its OCP 7.8.1.1.post1 pin
-matches the available environment but has no listed Linux ARM64 wheel. Current
-OCP versions publish ARM64 wheels; choose and test one common supported version
-before deployment. Do not promise that this exact dependency pin installs on a Pi.
+The new `cadquery-ocp-novtk==8.0.1.1.0` dependency has verified Linux ARM64 wheels
+and removes the previous VTK dependency. The complete Python dependency graph
+has been resolved for ARM64 CPython 3.11 and 3.12. The application has been
+installed and tested on **Linux x86_64**, not a physical Pi.
 
-The pinned OCP package also requires `vtk==9.3.1`. A deployment plan must validate
-the complete dependency set, not just OCP. No Pi performance, memory limits or
-installation procedure has been verified. See [installation limits](INSTALL.md#raspberry-pi-status).
+The intended Pi 4B target is **64-bit Raspberry Pi OS Bookworm with Python 3.11**.
+32-bit Pi OS is unsupported. Native shared libraries are still required despite
+the no-VTK package. See [the Pi installation steps](INSTALL.md#raspberry-pi-4b-target)
+and [the dependency verification report](ARM64_VERIFICATION.md).
 
-## Verification and remaining work
+Actual Pi installation, browser graphics, peak RAM, import/export performance
+and usable model size remain to be measured. Do not treat ARM64 wheel availability
+as hardware validation.
 
-The synthetic proof passes 12 regression tests and 13 demo checks on Linux
-x86_64 with Python 3.12.14 and OCP 7.8.1.1.post1. This is not evidence of support
-for every STEP exporter, arbitrary assemblies, other operating systems or a Pi.
+## Verification
 
-Installation smoke testing and its limits are recorded in [INSTALL.md](INSTALL.md).
-Real-world samples, additional unit/transform fixtures and ARM64 dependencies
-remain to be validated. Further product implementation is paused pending scope.
+```sh
+python -m unittest discover -s tests -v
+daedalus demo --output .runtime/proof-01
+```
 
-## Third-party notices
+The headless demo generates two instances of one box, moves only one, exports
+and reimports STEP, and checks all 13 geometry/source-preservation assertions.
+Choose a new output directory for each run. Tests cover CAD round trips, curved
+meshes, rotated placements, HTTP input validation and local-server boundaries.
+See [VERIFICATION.md](VERIFICATION.md) for the final verification record and limits.
 
-OCP is the Python binding to Open CASCADE; the binding and bundled components have
-their own licenses. Open CASCADE is LGPL 2.1 with the OCCT exception. Preserve
-upstream notices and review distribution obligations before shipping an installer.
-No license for this starter's original application code has been chosen yet.
+## Local use and safety
 
-- [Open CASCADE license](https://occt3d.com/dev/doc/overview/html/occt_public_license.html)
-- [OCP package and current distributions](https://pypi.org/project/cadquery-ocp/)
-- [Pinned OCP distributions](https://pypi.org/project/cadquery-ocp/7.8.1.1.post1/)
+The server binds to loopback only. It validates Host/Origin and request tokens,
+serializes kernel operations, stages uploads in its own temporary directory,
+and keeps the previous model when a replacement import fails. It does not accept
+arbitrary filesystem paths or overwrite an existing input/export.
+
+This is not a hardened public upload service. Use trusted STEP files. Native
+OCCT import/meshing has no subprocess sandbox or hard timeout; a large or hostile
+file can exhaust memory or crash the process. Do not expose the server directly
+to the internet or use it as a multi-user CAD service. Remote access can use
+[SSH forwarding](INSTALL.md#opening-the-viewer-from-another-computer).
+
+## Dependencies and licenses
+
+- Open CASCADE: LGPL 2.1 with the OCCT exception.
+- OCP Python binding/proxy: upstream Apache-2.0 metadata; bundled native libraries
+  have additional licenses. See [ARM64_VERIFICATION.md](ARM64_VERIFICATION.md).
+- Three.js and OrbitControls: MIT; version and license are included with the
+  bundled browser assets.
+
+No license for Daedalus's original application code has been selected. Public
+repository visibility alone does not provide an open-source reuse license.
+Resolve all redistribution obligations before shipping an installer or bundled
+native binaries.
