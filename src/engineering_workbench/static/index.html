@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f7f8f5">
+  <title>Daedalus · Focus view</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Daedalus home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 12 7v13l-12 7-12-7V10l12-7Zm0 0v13m12-6-12 6-12-6m12 6v14M10 7l12 6v7l-6 4-6-4v-7"/></svg>
+      <span>DAEDALUS</span>
+    </a>
+    <span class="header-divider"></span><span class="workspace-label">Focus view</span>
+    <div class="header-actions">
+      <span class="local-badge"><span></span>Local workspace</span>
+      <button id="export-button" class="button secondary" type="button" disabled>Export STEP</button>
+      <button id="import-button" class="button primary" type="button" disabled><span aria-hidden="true">+</span> Import STEP</button>
+      <input id="file-input" type="file" accept=".step,.stp" hidden>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="view-panel" aria-label="Assembly view">
+      <div class="view-heading">
+        <div><p class="eyebrow">ASSEMBLY</p><h1 id="model-name">Your workspace</h1><p id="model-caption" class="muted">One view. Every move in context.</p></div>
+        <button id="fit-button" class="button icon-button" type="button" disabled title="Fit assembly (F)" aria-label="Fit assembly in view">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4M7 7h6v6H7z"/></svg>
+        </button>
+      </div>
+      <div id="viewport" class="viewport" tabindex="0" role="region" aria-label="Interactive 3D assembly. Drag to orbit, right-drag to pan, scroll to zoom. Arrow keys orbit, Shift and arrows pan, plus and minus zoom, F fits the assembly. Select components from the adjacent list.">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-illustration" aria-hidden="true"><svg viewBox="0 0 180 150"><path class="ghost-cube" d="m50 18 49 28v56l-49 28-49-28V46l49-28Zm0 0v56m49-28L50 74 1 46m49 28v56"/><path class="solid-cube" d="m105 28 49 28v56l-49 28-49-28V56l49-28Zm0 0v56m49-28-49 28-49-28m49 28v56"/><path class="cube-top" d="m56 56 49-28 49 28-49 28Z"/></svg></div>
+          <h2>Bring your assembly into focus.</h2>
+          <p>Import a STEP assembly, select a component,<br>and see exactly what moves.</p>
+          <button id="empty-import" class="button primary" type="button" disabled>Choose a STEP file <span aria-hidden="true">↗</span></button>
+          <button id="demo-button" class="text-button" type="button" disabled>Or explore a sample assembly <span aria-hidden="true">→</span></button>
+          <small>.step or .stp · Up to 20 MiB · Source file stays unchanged</small>
+        </div>
+        <div id="viewer-error" class="viewer-error" hidden role="alert"></div>
+        <div id="busy-indicator" class="busy-indicator" hidden><span class="spinner" aria-hidden="true"></span><span id="busy-label">Loading…</span></div>
+        <div id="view-legend" class="view-legend" hidden><span><i class="legend-current"></i>Current position</span><span><i class="legend-original"></i>Original position of moved parts</span></div>
+        <span id="axes-label" class="axes-label" hidden aria-hidden="true"><b class="axis-x">X</b><b class="axis-y">Y</b><b class="axis-z">Z</b><span>Z up</span></span>
+      </div>
+      <div class="viewport-footer"><span>Drag to orbit <i>·</i> Right-drag to pan <i>·</i> Scroll to zoom</span><span class="units">mm</span></div>
+    </section>
+
+    <aside class="inspector" aria-label="Components and movement">
+      <section class="components-section">
+        <div class="section-heading"><h2>Components</h2><span id="component-count" class="count">0</span></div>
+        <p id="components-help" class="muted small">Your imported assembly will appear here.</p>
+        <ul id="component-list" class="component-list" aria-label="Assembly components"></ul>
+        <div id="empty-components" class="empty-components" aria-hidden="true"><span></span><span></span><span></span></div>
+      </section>
+      <section id="movement-section" class="movement-section" aria-labelledby="movement-title">
+        <p class="eyebrow">POSITION</p>
+        <h2 id="movement-title">Select a component</h2>
+        <p id="movement-help" class="muted small">Pick a part in the view or component list to adjust its position.</p>
+        <form id="move-form" hidden>
+          <div id="offset-fields" class="offset-fields">
+            <label class="offset-field"><span class="axis-label axis-x">X</span><span class="sr-only">X offset in millimetres</span><input id="offset-x" type="number" inputmode="decimal" step="any" min="-1000000" max="1000000" value="0" required aria-label="X offset in millimetres"><span class="input-unit" aria-hidden="true">mm</span></label>
+            <label class="offset-field"><span class="axis-label axis-y">Y</span><span class="sr-only">Y offset in millimetres</span><input id="offset-y" type="number" inputmode="decimal" step="any" min="-1000000" max="1000000" value="0" required aria-label="Y offset in millimetres"><span class="input-unit" aria-hidden="true">mm</span></label>
+            <label class="offset-field"><span class="axis-label axis-z">Z</span><span class="sr-only">Z offset in millimetres</span><input id="offset-z" type="number" inputmode="decimal" step="any" min="-1000000" max="1000000" value="0" required aria-label="Z offset in millimetres"><span class="input-unit" aria-hidden="true">mm</span></label>
+          </div>
+          <p class="offset-note">Offsets from the imported position,<br>along the parent assembly’s axes.</p>
+          <div class="move-actions"><button id="apply-button" class="button primary" type="submit" disabled>Apply movement</button><button id="reset-button" class="button secondary" type="button" disabled title="Return selected component to its imported position">Reset</button></div>
+          <p id="selection-status" class="selection-status">At imported position</p>
+        </form>
+      </section>
+      <div class="source-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 6 3v5c0 4-6 7-6 7s-6-3-6-7V5l6-3Zm-3 7 2 2 4-4"/></svg><p>Your source stays intact.<br><span>Export creates a new STEP file.</span></p></div>
+    </aside>
+  </main>
+  <footer class="app-footer"><div id="status" role="status" aria-live="polite">Connecting to the local workspace…</div><button id="retry-button" class="text-button" type="button" hidden>Retry connection</button><span class="footer-label">FOCUS ON THE CHANGE</span></footer>
+  <noscript><p class="noscript">Enable JavaScript to use the 3D workspace.</p></noscript>
+</body>
+</html>
