@@ -18,20 +18,44 @@
     </a>
     <span class="header-divider"></span><span class="workspace-label">Focus view</span>
     <div class="header-actions">
+      <label id="projects-control" hidden><span class="sr-only">Saved projects</span><select id="project-select" aria-label="Saved projects"><option value="">Open project…</option></select></label>
       <span class="local-badge"><span></span>Local workspace</span>
       <button id="export-button" class="button secondary" type="button" disabled>Export STEP</button>
-      <button id="import-button" class="button primary" type="button" disabled><span aria-hidden="true">+</span> Import STEP</button>
       <input id="file-input" type="file" accept=".step,.stp" hidden>
     </div>
   </header>
 
+  <nav class="assembly-toolbar" aria-label="Assembly tools">
+    <div class="tool-group">
+      <button id="import-button" class="button secondary" type="button" disabled><span aria-hidden="true">+</span> Import STEP</button>
+      <button id="move-button" class="button secondary" type="button" disabled aria-controls="movement-section" title="Edit the selected component’s position">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2v16M2 10h16M7 5l3-3 3 3M7 15l3 3 3-3M5 7l-3 3 3 3M15 7l3 3-3 3"/></svg>Move
+      </button>
+    </div>
+    <div class="tool-group view-modes" role="group" aria-label="View mode">
+      <button id="normal-view" class="button secondary" type="button" aria-pressed="true" disabled>Normal</button>
+      <button id="diff-view" class="button secondary" type="button" aria-pressed="false" disabled>Diff</button>
+    </div>
+    <div class="tool-group">
+      <button id="reset-button" class="button secondary" type="button" disabled title="Return selected component to its imported position">Reset</button>
+      <button id="fit-button" class="button secondary" type="button" disabled title="Fit assembly (F)" aria-label="Fit assembly in view">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4M7 7h6v6H7z"/></svg>Fit
+      </button>
+    </div>
+  </nav>
   <main class="workspace">
+    <aside class="component-tree" aria-label="Assembly components panel">
+      <section class="components-section">
+        <div class="section-heading"><h2>Components</h2><span id="component-count" class="count">0</span></div>
+        <p id="components-help" class="muted small">Your imported assembly will appear here.</p>
+        <p class="assembly-root"><span aria-hidden="true">▾</span> Assembly</p>
+        <ul id="component-list" class="component-list" aria-label="Assembly components"></ul>
+        <div id="empty-components" class="empty-components" aria-hidden="true"><span></span><span></span><span></span></div>
+      </section>
+    </aside>
     <section class="view-panel" aria-label="Assembly view">
       <div class="view-heading">
         <div><p class="eyebrow">ASSEMBLY</p><h1 id="model-name">Your workspace</h1><p id="model-caption" class="muted">One view. Every move in context.</p></div>
-        <button id="fit-button" class="button icon-button" type="button" disabled title="Fit assembly (F)" aria-label="Fit assembly in view">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4M7 7h6v6H7z"/></svg>
-        </button>
       </div>
       <div id="viewport" class="viewport" tabindex="0" role="region" aria-label="Interactive 3D assembly. Drag to orbit, right-drag to pan, scroll to zoom. Arrow keys orbit, Shift and arrows pan, plus and minus zoom, F fits the assembly. Select components from the adjacent list.">
         <div id="empty-state" class="empty-state">
@@ -44,19 +68,13 @@
         </div>
         <div id="viewer-error" class="viewer-error" hidden role="alert"></div>
         <div id="busy-indicator" class="busy-indicator" hidden><span class="spinner" aria-hidden="true"></span><span id="busy-label">Loading…</span></div>
-        <div id="view-legend" class="view-legend" hidden><span><i class="legend-current"></i>Current position</span><span><i class="legend-original"></i>Original position of moved parts</span></div>
+        <div id="view-legend" class="view-legend" hidden><span id="current-legend"><i class="legend-current"></i>Current position</span><span id="original-legend" hidden><i class="legend-original"></i>Imported position</span></div>
         <span id="axes-label" class="axes-label" hidden aria-hidden="true"><b class="axis-x">X</b><b class="axis-y">Y</b><b class="axis-z">Z</b><span>Z up</span></span>
       </div>
       <div class="viewport-footer"><span>Drag to orbit <i>·</i> Right-drag to pan <i>·</i> Scroll to zoom</span><span class="units">mm</span></div>
     </section>
 
-    <aside class="inspector" aria-label="Components and movement">
-      <section class="components-section">
-        <div class="section-heading"><h2>Components</h2><span id="component-count" class="count">0</span></div>
-        <p id="components-help" class="muted small">Your imported assembly will appear here.</p>
-        <ul id="component-list" class="component-list" aria-label="Assembly components"></ul>
-        <div id="empty-components" class="empty-components" aria-hidden="true"><span></span><span></span><span></span></div>
-      </section>
+    <aside class="inspector" aria-label="Position controls">
       <section id="movement-section" class="movement-section" aria-labelledby="movement-title">
         <p class="eyebrow">POSITION</p>
         <h2 id="movement-title">Select a component</h2>
@@ -68,14 +86,41 @@
             <label class="offset-field"><span class="axis-label axis-z">Z</span><span class="sr-only">Z offset in millimetres</span><input id="offset-z" type="number" inputmode="decimal" step="any" min="-1000000" max="1000000" value="0" required aria-label="Z offset in millimetres"><span class="input-unit" aria-hidden="true">mm</span></label>
           </div>
           <p class="offset-note">Offsets from the imported position,<br>along the parent assembly’s axes.</p>
-          <div class="move-actions"><button id="apply-button" class="button primary" type="submit" disabled>Apply movement</button><button id="reset-button" class="button secondary" type="button" disabled title="Return selected component to its imported position">Reset</button></div>
+          <div class="move-actions"><button id="apply-button" class="button primary" type="submit" disabled>Apply movement</button></div>
           <p id="selection-status" class="selection-status">At imported position</p>
         </form>
+      </section>
+      <section id="history-panel" class="history-panel" hidden aria-label="Project checkpoints">
+        <h2>Checkpoints</h2>
+        <p id="save-status" role="status" class="small muted"></p>
+        <button id="reload-project" class="button secondary" type="button">Reload saved project</button>
+        <form id="checkpoint-form">
+          <label for="checkpoint-message">Checkpoint message</label>
+          <input id="checkpoint-message" maxlength="200" placeholder="Describe this version" autocomplete="off">
+          <button id="checkpoint-button" class="button primary" type="submit">Save checkpoint</button>
+        </form>
+        <label for="checkpoint-select">Compare from</label>
+        <select id="checkpoint-select"><option value="">Imported positions</option></select>
+        <label for="comparison-after-select">Compare to</label>
+        <select id="comparison-after-select"><option value="">Working positions</option></select>
+        <p id="review-notice" class="review-notice" hidden>Read-only checkpoint review. Your working changes are kept.</p>
+        <button id="return-working" class="button secondary" type="button" hidden>Return to working positions</button>
+        <p class="small muted">Most recent 50 checkpoints. Same-source placement changes only. Diff overlays both versions.</p>
+        <button id="restore-button" class="button secondary" type="button" disabled>Restore “from” positions</button>
+        <p id="comparison-summary" class="small muted" aria-live="polite"></p>
+        <ul id="comparison-deltas" class="comparison-deltas" aria-label="Position differences"></ul>
       </section>
       <div class="source-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m10 2 6 3v5c0 4-6 7-6 7s-6-3-6-7V5l6-3Zm-3 7 2 2 4-4"/></svg><p>Your source stays intact.<br><span>Export creates a new STEP file.</span></p></div>
     </aside>
   </main>
   <footer class="app-footer"><div id="status" role="status" aria-live="polite">Connecting to the local workspace…</div><button id="retry-button" class="text-button" type="button" hidden>Retry connection</button><span class="footer-label">FOCUS ON THE CHANGE</span></footer>
+  <div id="replacement-dialog" class="decision-backdrop" hidden>
+    <section role="dialog" aria-modal="true" aria-labelledby="replacement-title" class="decision-dialog" tabindex="-1">
+      <h2 id="replacement-title">Keep your changes?</h2>
+      <p id="replacement-description">There are uncheckpointed changes. Save them before continuing, or explicitly discard them.</p>
+      <div class="decision-actions"><button id="replacement-save" class="button primary" type="button">Save and continue</button><button id="replacement-discard" class="button secondary" type="button">Discard changes</button><button id="replacement-cancel" class="button secondary" type="button">Cancel</button></div>
+    </section>
+  </div>
   <noscript><p class="noscript">Enable JavaScript to use the 3D workspace.</p></noscript>
 </body>
 </html>

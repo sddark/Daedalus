@@ -22,7 +22,7 @@ fixture and a viewer test double. It covers pending actions, cancellation,
 repeated moves, upload errors/retry, revision conflicts, network reconciliation,
 input limits, label escaping, accessible controls and WebGL-unavailable behavior.
 viewer.test.mjs runs the real Three.js geometry/transform code without a GPU. It
-checks shared mesh buffers, matrix conventions, movement outlines, reset, fitting,
+checks shared mesh buffers, matrix conventions, translucent baseline surfaces, reset, fitting,
 selection and disposal. These tests do not prove browser pixel rendering, pointer
 orbit/pan/zoom behavior, actual browser layout or performance on Raspberry Pi.
 
@@ -30,9 +30,11 @@ For manual browser QA, start `daedalus serve`, open its loopback URL and verify:
 - Empty workspace at desktop and phone widths, keyboard focus and readable labels.
 - Sample or STEP import, list selection and click selection of both rendered parts.
 - Drag orbit, right-drag pan, wheel/pinch zoom, F/Fit and keyboard arrow controls.
-- Movable X=10 shows a shaded new position and dashed original outline in one view.
+- Normal shows only opaque current components after movement.
+- Diff shows complete translucent current and imported surfaces, including spheres.
+- Switching modes preserves placement and selection; unchanged parts appear once.
 - Repeating X=10 does nothing; X=20 is 20 mm from import, not 30 mm accumulated.
-- Reset clears the outline. Export downloads a new STEP, preserving the source.
+- Reset clears the imported-position surface. Export downloads a new STEP, preserving the source.
 - After a move, replacement import Cancel keeps the current model; Accept replaces.
 - Bad STEP leaves the prior view intact and the same filename can be retried.
 - While importing/moving, repeat submissions, selection and other mutations lock.
@@ -40,3 +42,10 @@ For manual browser QA, start `daedalus serve`, open its loopback URL and verify:
 - WebGL unavailable/context-loss messaging is helpful and numeric controls work.
 
 The bundled vendor README and THREE-LICENSE.txt document upstream provenance.
+
+Checkpoint UI coverage also includes persistent saved/dirty status, full checkpoint
+IDs, UUID-preserving save retries, history conflicts, project switching and reload,
+explicit save/discard/cancel flows, recovery locks, checkpoint restore, per-part
+deltas, and independent comparison transforms with unchanged camera/baseline.
+Browser QA should verify checkpoint control layout, keyboard dialog focus/Escape,
+project reopening after restart, and checkpoint ghosts on real curved geometry.

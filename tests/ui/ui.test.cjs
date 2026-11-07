@@ -35,6 +35,8 @@ async function setup(t, initial = makeState(), options = {}) {
     constructor(container, select, failure) { if (options.webglFails) throw new Error('WebGL unavailable'); this.selectCallback = select; this.failureCallback = failure; this.models = []; view = this; }
     setModel(next) { this.models.push(clone(next)); }
     select(id) { this.selectedId = id; }
+    setComparison(matrices, afterMatrices = null) { this.comparison = clone(matrices); this.review = clone(afterMatrices); }
+    setDiffMode(enabled) { this.diffMode = enabled; }
     fit() { this.fitCalled = true; }
   };
   window.console.warn = () => {};
@@ -313,4 +315,361 @@ test('document ships only local scripts/styles, named numeric fields and respons
   const css = fs.readFileSync(path.join(root, 'style.css'), 'utf8');
   assert.match(css, /max-width:730px/); assert.match(css, /prefers-reduced-motion/);
   assert.match(fs.readFileSync(path.join(root, 'vendor/OrbitControls.js'), 'utf8'), /from '\.\/three.module.js'/);
+});
+
+test('normal is default; diff is explicit, accessible and does not mutate the assembly', async (t) => {
+  const h = await setup(t, movedState());
+  assert.equal(h.$('normal-view').getAttribute('aria-pressed'), 'true');
+  assert.equal(h.$('original-legend').hidden, true);
+  const calls = h.api.calls.length;
+  h.$('diff-view').click();
+  assert.equal(h.view.diffMode, true);
+  assert.equal(h.$('diff-view').getAttribute('aria-pressed'), 'true');
+  assert.equal(h.$('original-legend').hidden, false);
+  h.select('movable'); h.input('offset-x', '20'); await h.submit();
+  assert.equal(h.view.diffMode, true);
+  assert.match(h.$('status').textContent, /Diff shows/);
+  h.$('normal-view').click();
+  assert.equal(h.view.diffMode, false);
+  assert.equal(h.$('original-legend').hidden, true);
+  assert.equal(h.api.calls.length, calls + 1);
+  assert.equal(h.api.state.model.occurrences[1].offset_mm[0], 20);
+});
+
+function persistentState(isDirty = true) {
+  const state = movedState();
+  state.persistence_enabled = true;
+  state.project = { id: 'project-a', name: 'Assembly A', head: 'head-1', dirty: isDirty, checkpoints: [{ id: 'head-1', parent: null, message: '<b>First checkpoint</b>' }] };
+  state.projects = [{ id: 'project-a', name: 'Assembly A', head: 'head-1' }, { id: 'project-b', name: 'Assembly B', head: 'head-2' }];
+  return state;
+}
+function checkpointHook(h) {
+  h.api.hook = async (url, init) => {
+    if (url !== '/api/checkpoint') return;
+    const payload = JSON.parse(init.body);
+    assert.equal(payload.expected_head, h.api.state.project.head);
+    assert.match(payload.request_id, /^[0-9a-f-]{36}$/);
+    h.api.state.project.head = 'head-new'; h.api.state.project.dirty = false;
+    h.api.state.project.checkpoints.unshift({ id: 'head-new', parent: 'head-1', message: payload.message });
+    h.api.state.revision++;
+    return response(h.api.state);
+  };
+}
+
+test('persistent save uses expected head and UUID, renders safe labels and clean status', async (t) => {
+  const h = await setup(t, persistentState());
+  assert.equal(h.$('history-panel').hidden, false);
+  assert.match(h.$('save-status').textContent, /Unsaved/);
+  assert.equal(h.$('checkpoint-select').querySelector('b'), null);
+  checkpointHook(h); h.input('checkpoint-message', 'Move bracket');
+  h.$('checkpoint-button').click(); await settle();
+  assert.equal(h.api.calls.filter((c) => c.url === '/api/checkpoint').length, 1);
+  assert.equal(h.$('checkpoint-button').disabled, true);
+  assert.match(h.$('save-status').textContent, /All changes checkpointed/);
+  assert.match(h.$('checkpoint-select').textContent, /Move bracket/);
+});
+
+test('comparison leaves authoritative offsets untouched and displays checkpoint deltas', async (t) => {
+  const h = await setup(t, persistentState());
+  h.select('movable');
+  const before = clone(h.api.state.model);
+  h.api.hook = async (url) => url.startsWith('/api/compare?') ? response({ revision: 0, checkpoint_id: 'head-1', matrices: { fixed: matrix(), movable: matrix(35) }, report: { changes: [{ id: 'movable', delta_mm: [5,0,0], distance_mm: 5 }], unchanged_count: 1 } }) : null;
+  h.$('checkpoint-select').value = 'head-1'; h.$('checkpoint-select').dispatchEvent(new h.window.Event('change')); await settle();
+  assert.equal(h.$('offset-x').value, '10');
+  assert.deepEqual(h.api.state.model, before);
+  assert.deepEqual(h.view.comparison.movable, matrix(35));
+  assert.match(h.$('comparison-deltas').textContent, /Movable: Δ \[5, 0, 0\] mm/);
+  h.$('normal-view').click(); h.$('diff-view').click();
+  assert.deepEqual(h.view.comparison.movable, matrix(35));
+});
+
+test('dirty import offers cancel, explicit discard, and save before replacement', async (t) => {
+  const h = await setup(t, persistentState());
+  await h.upload('replacement.step');
+  assert.equal(h.$('replacement-dialog').hidden, false);
+  h.$('replacement-cancel').click(); await settle();
+  assert.equal(h.api.calls.length, 1);
+  await h.upload('replacement.step'); h.$('replacement-discard').click(); await settle();
+  assert.equal(h.api.calls.at(-1).headers['X-Discard-Changes'], 'true');
+  checkpointHook(h);
+  await h.upload('saved.step'); h.$('replacement-save').click(); await settle();
+  assert.deepEqual(h.api.calls.slice(-2).map((c) => c.url), ['/api/checkpoint', '/api/import']);
+  assert.equal(h.api.calls.at(-1).headers['X-Discard-Changes'], undefined);
+});
+
+test('uncertain save retains request identity and never automatically posts twice', async (t) => {
+  const h = await setup(t, persistentState());
+  h.api.fail = new Error('Lost response'); h.$('checkpoint-button').click(); await settle();
+  const first = h.api.calls.find((c) => c.url === '/api/checkpoint');
+  assert.equal(h.api.calls.filter((c) => c.url === '/api/checkpoint').length, 1);
+  assert.equal(h.$('checkpoint-message').disabled, true);
+  checkpointHook(h); h.$('checkpoint-button').click(); await settle();
+  const second = h.api.calls.filter((c) => c.url === '/api/checkpoint')[1];
+  assert.equal(second.body, first.body);
+});
+
+test('recovery locks mutations and export but allows validated project reload', async (t) => {
+  const state = persistentState(false); state.recovery_required = true;
+  const h = await setup(t, state);
+  for (const id of ['apply-button','offset-x','export-button','checkpoint-button']) assert.equal(h.$(id).disabled, true);
+  assert.equal(h.$('reload-project').disabled, false);
+  h.api.hook = async (url, init) => {
+    if (url !== '/api/project/open') return;
+    assert.equal(JSON.parse(init.body).project_id, 'project-a');
+    assert.equal(JSON.parse(init.body).discard_changes, true);
+    h.api.state.recovery_required = false;
+    return response(h.api.state);
+  };
+  h.$('reload-project').click(); await settle();
+  assert.equal(h.$('replacement-dialog').hidden, false);
+  assert.equal(h.$('replacement-save').disabled, true);
+  h.$('replacement-discard').click(); await settle();
+  assert.equal(h.$('offset-x').disabled, false);
+  assert.equal(h.$('export-button').disabled, false);
+});
+
+test('restore requires explicit dirty discard and preserves expected head', async (t) => {
+  const h = await setup(t, persistentState());
+  h.api.hook = async (url, init) => {
+    if (url.startsWith('/api/compare?')) return response({ revision: 0, checkpoint_id: 'head-1', matrices: { fixed: matrix(), movable: matrix(35) }, report: { changes: [], unchanged_count: 2 } });
+    if (url === '/api/restore') {
+      assert.deepEqual(JSON.parse(init.body), { revision: 0, expected_head: 'head-1', checkpoint_id: 'head-1', discard_changes: true });
+      return response(h.api.state);
+    }
+  };
+  h.$('checkpoint-select').value = 'head-1'; h.$('checkpoint-select').dispatchEvent(new h.window.Event('change')); await settle();
+  h.$('restore-button').click(); await settle();
+  assert.equal(h.api.calls.some((c) => c.url === '/api/restore'), false);
+  h.$('replacement-discard').click(); await settle();
+  assert.equal(h.api.calls.filter((c) => c.url === '/api/restore').length, 1);
+});
+
+
+test('checkpoint conflict refreshes head without replay and next deliberate save uses fresh state', async (t) => {
+  const h = await setup(t, persistentState());
+  h.api.state.project.head = 'other-tab'; h.api.state.revision = 6;
+  h.api.fail = response({ error: 'History changed' }, 409);
+  h.$('checkpoint-button').click(); await settle();
+  assert.equal(h.api.calls.filter((c) => c.url === '/api/checkpoint').length, 1);
+  assert.equal(h.$('checkpoint-message').disabled, false);
+  checkpointHook(h); h.$('checkpoint-button').click(); await settle();
+  const body = JSON.parse(h.api.calls.filter((c) => c.url === '/api/checkpoint')[1].body);
+  assert.equal(body.expected_head, 'other-tab'); assert.equal(body.revision, 6);
+});
+
+test('recovery permits checkpoint selection for restore without an invalid compare request', async (t) => {
+  const state = persistentState(); state.recovery_required = true;
+  const h = await setup(t, state);
+  h.$('checkpoint-select').value = 'head-1'; h.$('checkpoint-select').dispatchEvent(new h.window.Event('change')); await settle();
+  assert.equal(h.api.calls.some((c) => c.url.startsWith('/api/compare')), false);
+  assert.equal(h.$('restore-button').disabled, false);
+});
+
+
+test('project switching cancels safely, then sends explicit discard and opens latest state', async (t) => {
+  const h = await setup(t, persistentState());
+  const choose = () => { h.$('project-select').value = 'project-b'; h.$('project-select').dispatchEvent(new h.window.Event('change')); };
+  choose(); await settle(); h.$('replacement-cancel').click(); await settle();
+  assert.equal(h.$('project-select').value, 'project-a'); assert.equal(h.api.calls.length, 1);
+  h.api.hook = async (url, init) => {
+    if (url !== '/api/project/open') return;
+    assert.deepEqual(JSON.parse(init.body), { revision: 0, project_id: 'project-b', discard_changes: true });
+    h.api.state.project = { id: 'project-b', name: 'Assembly B', head: 'head-2', dirty: false, checkpoints: [{ id: 'head-2', message: 'B checkpoint', parent: null }] };
+    h.api.state.model = model('B.step'); h.api.state.revision++;
+    return response(h.api.state);
+  };
+  choose(); await settle(); h.$('replacement-discard').click(); await settle();
+  assert.equal(h.$('project-select').value, 'project-b');
+  assert.equal(h.$('model-name').textContent, 'B.step');
+  assert.equal(h.$('checkpoint-select').value, '');
+});
+
+test('comparison conflict refreshes workspace and clears stale ghost without any mutation', async (t) => {
+  const h = await setup(t, persistentState());
+  h.api.state.revision = 2;
+  h.api.hook = async (url) => url.startsWith('/api/compare?') ? response({ error: 'Stale revision' }, 409) : null;
+  h.$('checkpoint-select').value = 'head-1'; h.$('checkpoint-select').dispatchEvent(new h.window.Event('change')); await settle();
+  assert.equal(h.api.calls.at(-1).url, '/api/state');
+  assert.equal(h.$('checkpoint-select').value, '');
+  assert.equal(h.view.comparison, null);
+  assert.equal(h.api.calls.some((c) => c.method === 'POST'), false);
+  assert.match(h.$('status').textContent, /Could not compare/);
+});
+
+
+test('external history conflict disables save until an explicit project reload', async (t) => {
+  const state = persistentState(); state.project.history_conflict = true; state.project.latest_head = 'external-head';
+  const h = await setup(t, state);
+  assert.equal(h.$('checkpoint-button').disabled, true);
+  assert.match(h.$('save-status').textContent, /history changed elsewhere/);
+  h.$('reload-project').click(); await settle();
+  assert.equal(h.$('replacement-dialog').hidden, false);
+  assert.equal(h.$('replacement-save').disabled, true);
+  assert.equal(h.$('replacement-discard').disabled, false);
+  h.$('replacement-cancel').click(); await settle();
+});
+
+
+test('uncertain committed save preserves UUID through clean conflicting state and exact receipt retry', async (t) => {
+  const h = await setup(t, persistentState());
+  h.api.hook = async (url) => {
+    if (url !== '/api/checkpoint') return;
+    h.api.state.project.dirty = false; h.api.state.project.history_conflict = true;
+    h.api.state.project.latest_head = 'committed-head';
+    throw new Error('Commit response lost');
+  };
+  h.$('checkpoint-button').click(); await settle();
+  const first = h.api.calls.find((c) => c.url === '/api/checkpoint');
+  assert.equal(h.$('checkpoint-button').disabled, false);
+  assert.equal(h.$('checkpoint-button').textContent, 'Verify pending save');
+  assert.equal(h.$('offset-x').disabled, true);
+  assert.equal(h.$('checkpoint-message').disabled, true);
+  h.api.hook = async (url, init) => {
+    if (url !== '/api/checkpoint') return;
+    assert.equal(init.body, first.body);
+    h.api.state.project.history_conflict = false; h.api.state.project.head = 'committed-head';
+    return response(h.api.state);
+  };
+  h.$('checkpoint-button').click(); await settle();
+  assert.equal(h.$('checkpoint-button').disabled, true);
+  assert.equal(h.$('checkpoint-message').disabled, false);
+  assert.equal(h.$('offset-x').disabled, false);
+  assert.match(h.$('save-status').textContent, /All changes checkpointed/);
+});
+
+test('uncertain pending save cannot retry against a changed revision or placement', async (t) => {
+  const h = await setup(t, persistentState());
+  h.api.hook = async (url) => {
+    if (url !== '/api/checkpoint') return;
+    h.api.state.revision++; h.api.state.model.occurrences[1].offset_mm = [99,0,0];
+    throw new Error('Response lost while another tab edited');
+  };
+  h.$('checkpoint-button').click(); await settle();
+  assert.equal(h.$('checkpoint-button').disabled, true);
+  assert.match(h.$('save-status').textContent, /Reload the saved project/);
+  assert.equal(h.api.calls.filter((c) => c.url === '/api/checkpoint').length, 1);
+});
+
+
+test('explicit uncertain_checkpoint 409 retains exact pending receipt retry', async (t) => {
+  const h = await setup(t, persistentState());
+  h.api.hook = async (url) => {
+    if (url !== '/api/checkpoint') return;
+    h.api.state.project.history_conflict = true; h.api.state.project.dirty = false;
+    return response({ error: 'Checkpoint outcome uncertain', code: 'uncertain_checkpoint' }, 409);
+  };
+  h.$('checkpoint-button').click(); await settle();
+  const first = h.api.calls.find((c) => c.url === '/api/checkpoint');
+  assert.equal(h.$('checkpoint-button').disabled, false);
+  assert.match(h.$('save-status').textContent, /Verify the pending save/);
+  h.api.hook = async (url, init) => {
+    if (url !== '/api/checkpoint') return;
+    assert.equal(init.body, first.body); h.api.state.project.history_conflict = false;
+    return response(h.api.state);
+  };
+  h.$('checkpoint-button').click(); await settle();
+  assert.equal(h.api.calls.filter((c) => c.url === '/api/checkpoint').length, 2);
+  assert.equal(h.$('checkpoint-button').textContent, 'Save checkpoint');
+});
+
+test('recovery permits fresh import only after explicit discard confirmation', async (t) => {
+  const state = persistentState(false); state.recovery_required = true;
+  const h = await setup(t, state);
+  assert.equal(h.$('import-button').disabled, false);
+  await h.upload('recovery.step');
+  assert.equal(h.$('replacement-dialog').hidden, false);
+  assert.equal(h.api.calls.filter((c) => c.url === '/api/import').length, 0);
+  h.$('replacement-discard').click(); await settle();
+  const call = h.api.calls.find((c) => c.url === '/api/import');
+  assert.equal(call.headers['X-Discard-Changes'], 'true');
+});
+
+test('conflicting history labels actual latest head rather than old session base', async (t) => {
+  const state = persistentState(); state.project.history_conflict = true; state.project.latest_head = 'head-external';
+  state.project.checkpoints.unshift({id:'head-external',parent:'head-1',message:'External version'});
+  const h = await setup(t, state);
+  assert.match(h.$('checkpoint-select').options[1].textContent, /External version.*latest/);
+  assert.doesNotMatch(h.$('checkpoint-select').options[2].textContent, /latest/);
+  assert.match(h.$('project-select').options[1].textContent, /Assembly A · project-/);
+});
+
+function pairHook(h) {
+  h.api.hook = async (url) => {
+    if (!url.startsWith('/api/compare?')) return;
+    const query = new URL(url, 'http://localhost').searchParams;
+    const id = query.get('checkpoint'), after = query.get('after');
+    return response({ revision: h.api.state.revision, checkpoint_id: id, after_checkpoint_id: after,
+      matrices: { fixed: matrix(), movable: matrix(35) }, after_matrices: { fixed: matrix(), movable: matrix(50) },
+      report: { changes: [{ id: 'movable', delta_mm: [after ? 15 : 5,0,0], distance_mm: after ? 15 : 5 }], unchanged_count: 1 } });
+  };
+}
+async function choosePair(h) {
+  pairHook(h);
+  h.$('comparison-after-select').value = 'head-1';
+  h.$('comparison-after-select').dispatchEvent(new h.window.Event('change')); await settle();
+}
+
+test('saved pair review is display-only, blocks writes and returns exact working positions', async (t) => {
+  const h = await setup(t, persistentState()); h.select('movable');
+  const before = clone(h.api.state); await choosePair(h);
+  assert.match(h.api.calls.at(-1).url, /checkpoint=head-1.*after=head-1/);
+  assert.equal(h.$('checkpoint-select').value, 'head-1');
+  assert.equal(h.$('review-notice').hidden, false);
+  assert.equal(h.$('move-form').hidden, true);
+  assert.match(h.$('model-caption').textContent, /Read-only/);
+  assert.match(h.$('current-legend').textContent, /To: head-1/);
+  assert.deepEqual(h.view.review.movable, matrix(50));
+  for (const id of ['offset-x', 'move-button', 'reset-button', 'checkpoint-button', 'restore-button', 'export-button']) assert.equal(h.$(id).disabled, true, id);
+  h.input('offset-x', '70'); await h.submit();
+  h.$('checkpoint-form').dispatchEvent(new h.window.Event('submit', { cancelable: true })); await settle();
+  assert.equal(h.api.calls.some((c) => c.method === 'POST'), false);
+  assert.deepEqual(h.api.state, before);
+  h.$('comparison-deltas').querySelector('button').click();
+  assert.equal(h.view.selectedId, 'movable');
+  h.$('normal-view').click(); h.$('diff-view').click();
+  assert.deepEqual(h.view.review.movable, matrix(50));
+  h.$('return-working').click(); await settle();
+  assert.equal(h.view.review, null); assert.equal(h.$('review-notice').hidden, true);
+  assert.equal(h.$('offset-x').value, '10'); assert.equal(h.$('move-form').hidden, false);
+  assert.equal(h.$('checkpoint-button').disabled, false); assert.equal(h.$('export-button').disabled, false);
+  assert.deepEqual(h.api.state, before);
+  assert.equal(h.api.calls.some((c) => c.method === 'POST'), false);
+});
+
+test('saved pair failures and mismatched endpoints safely return to working view', async (t) => {
+  for (const failure of [new Error('Offline'), response({ error: 'Unknown checkpoint' }, 400), response({ revision: 0, checkpoint_id: 'wrong', after_checkpoint_id: 'head-1', matrices: {}, after_matrices: {}, report: {} })]) {
+    const h = await setup(t, persistentState()); await choosePair(h);
+    h.api.hook = async (url) => { if (url.startsWith('/api/compare?')) { if (failure instanceof Error) throw failure; return failure; } };
+    h.$('comparison-after-select').dispatchEvent(new h.window.Event('change')); await settle();
+    assert.equal(h.view.review, null); assert.equal(h.view.comparison, null);
+    assert.equal(h.$('checkpoint-select').value, ''); assert.equal(h.$('comparison-after-select').value, '');
+    assert.equal(h.$('review-notice').hidden, true); assert.equal(h.$('export-button').disabled, false);
+    assert.match(h.$('status').textContent, /Could not compare/);
+    assert.equal(h.api.calls.some((c) => c.method === 'POST'), false);
+  }
+});
+
+test('repeated pair selection is serialized and Imported exits review', async (t) => {
+  const h = await setup(t, persistentState()); await choosePair(h);
+  const ordinary = h.api.hook; let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  h.api.hook = async (url) => { if (url.startsWith('/api/compare?')) { await gate; return ordinary(url); } };
+  h.$('comparison-after-select').dispatchEvent(new h.window.Event('change')); await tick();
+  assert.equal(h.$('checkpoint-select').disabled, true); assert.equal(h.$('comparison-after-select').disabled, true);
+  const count = h.api.calls.length;
+  h.$('comparison-after-select').dispatchEvent(new h.window.Event('change')); await tick(); assert.equal(h.api.calls.length, count);
+  release(); await settle();
+  h.$('checkpoint-select').value = ''; h.$('checkpoint-select').dispatchEvent(new h.window.Event('change')); await settle();
+  assert.equal(h.view.review, null); assert.equal(h.$('comparison-after-select').value, '');
+  assert.equal(h.$('offset-x').disabled, false);
+});
+
+test('project replacement during review can cancel or save working state before continuing', async (t) => {
+  const h = await setup(t, persistentState()); await choosePair(h);
+  await h.upload('new.step'); h.$('replacement-cancel').click(); await settle();
+  assert.equal(h.$('review-notice').hidden, false); assert.deepEqual(h.view.review.movable, matrix(50));
+  checkpointHook(h);
+  await h.upload('new.step'); h.$('replacement-save').click(); await settle();
+  assert.deepEqual(h.api.calls.filter((c) => c.method === 'POST').map((c) => c.url), ['/api/checkpoint', '/api/import']);
+  assert.equal(h.$('review-notice').hidden, true);
 });

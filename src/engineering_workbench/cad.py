@@ -43,6 +43,10 @@ class UnsupportedAssemblyError(ValueError):
     """The file is outside this intentionally small proof's assembly scope."""
 
 
+class PlacementRecoveryError(RuntimeError):
+    """The caller must disable edits and reload the last known valid document."""
+
+
 def file_sha256(path: Path) -> str:
     with Path(path).open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -240,6 +244,34 @@ class StepAssembly:
         # Replace this reference's placement, never transform its shared definition.
         XCAFDoc_Location.Set_s(label, TopLoc_Location(transform))
         self.shape_tool.UpdateAssemblies()
+
+    def translate_occurrence_checked(self, occurrence_id: str, delta_mm: Sequence[float]) -> dict:
+        """Apply a move and snapshot together, restoring exact placement on failure.
+
+        Call under the session's kernel lock. This does not persist a working
+        session or commit a Git checkpoint. A PlacementRecoveryError requires
+        the caller to stop editing until it reloads the document.
+        """
+        self._check_source()
+        if occurrence_id not in self._occurrences:
+            raise KeyError(f"Unknown or unsupported occurrence: {occurrence_id}")
+        label = self._occurrences[occurrence_id]
+        original_location = self.shape_tool.GetLocation_s(label)
+        try:
+            self.translate_occurrence(occurrence_id, delta_mm)
+            return self.snapshot()
+        except BaseException:
+            try:
+                XCAFDoc_Location.Set_s(label, original_location)
+                self.shape_tool.UpdateAssemblies()
+                restored = self.shape_tool.GetLocation_s(label).Transformation()
+                original = original_location.Transformation()
+                if any(restored.Value(row, column) != original.Value(row, column)
+                       for row in range(1, 4) for column in range(1, 5)):
+                    raise RuntimeError("Restored placement does not match the original")
+            except BaseException as recovery_error:
+                raise PlacementRecoveryError("Move recovery failed; reload the last valid document before editing") from recovery_error
+            raise
 
     def export_step(self, path: Path) -> None:
         self._check_source()

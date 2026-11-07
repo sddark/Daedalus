@@ -13,8 +13,10 @@ import tempfile
 import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .cad import StepAssembly, create_two_instance_fixture
+from .cad import PlacementRecoveryError, StepAssembly, create_two_instance_fixture
 from .mesh import display_meshes
+from .history import HistoryError, StaleCheckpoint, UncertainCheckpoint
+from .projects import ProjectSession
 
 MAX_IMPORT_BYTES = 20 * 1024 * 1024
 MAX_JSON_BYTES = 64 * 1024
@@ -27,10 +29,11 @@ class RequestError(ValueError):
         self.status = status
 
 
-class ViewerSession:
-    """One transient document, with immutable baseline and serialized OCCT work."""
+class ViewerSession(ProjectSession):
+    """One working document, optionally backed by persistent Git checkpoints."""
 
-    def __init__(self):
+    def __init__(self, workspace=None):
+        self._init_projects(workspace)
         self._temporary = tempfile.TemporaryDirectory(prefix="daedalus-session-")
         self.directory = Path(self._temporary.name)
         self.lock = threading.RLock()
@@ -38,6 +41,8 @@ class ViewerSession:
         self.revision = 0
         self.assembly = None
         self.model = None
+        self.recovery_required = False
+        self._owned_imports = set()
 
     def close(self):
         with self.lock:
@@ -47,12 +52,17 @@ class ViewerSession:
 
     def state(self):
         with self.lock:
-            return {"csrf_token": self.csrf_token, "revision": self.revision, "model": deepcopy(self.model)}
+            projects = self._project_state()
+            unavailable = bool(projects["project"] and projects["project"].get("unavailable"))
+            return {"csrf_token": self.csrf_token, "revision": self.revision,
+                    "model": deepcopy(self.model), "recovery_required": self.recovery_required or unavailable,
+                    **projects}
 
-    def import_step(self, data: bytes | None, name: str, expected_revision=None):
+    def import_step(self, data: bytes | None, name: str, expected_revision=None, discard_changes=False):
         with self.lock:
             if expected_revision is not None:
                 self._check_revision(expected_revision)
+            self._guard_discard(discard_changes)
             # A failed replacement cannot destroy the currently displayed model.
             candidate = Path(tempfile.mkdtemp(prefix="import-", dir=self.directory))
             source = candidate / "source.step"
@@ -70,20 +80,28 @@ class ViewerSession:
                     item["baseline_matrix_3x4"] = deepcopy(item["matrix_3x4"])
                     item["offset_mm"] = [0.0, 0.0, 0.0]
                 snapshot.update(name=name, meshes=meshes)
+                project_id, store = self._create_project(source, snapshot, name)
             except Exception:
                 import shutil
                 shutil.rmtree(candidate)
                 raise
             previous = self.assembly
             self.assembly, self.model = assembly, snapshot
+            self.project_id, self.store = project_id, store
+            self.base_head = store.head() if store is not None else None
+            self.recovery_required = False
+            self._owned_imports.add(candidate.resolve())
             self.revision += 1
-            if previous is not None:
+            if previous is not None and previous.source_path.parent in self._owned_imports:
                 import shutil
                 shutil.rmtree(previous.source_path.parent)
+                self._owned_imports.remove(previous.source_path.parent)
             return self.state()
 
     def move(self, request: dict):
         with self.lock:
+            if self.recovery_required:
+                raise RequestError(409, "Placement recovery failed; reimport the source before editing")
             if self.assembly is None:
                 raise RequestError(409, "Import a STEP assembly first")
             self._check_revision(request.get("revision"))
@@ -100,8 +118,12 @@ class ViewerSession:
             baseline = item["baseline_matrix_3x4"]
             current = item["matrix_3x4"]
             delta = [baseline[index][3] + offset[index] - current[index][3] for index in range(3)]
-            self.assembly.translate_occurrence(occurrence_id, delta)
-            fresh = self.assembly.snapshot()
+            try:
+                fresh = self.assembly.translate_occurrence_checked(occurrence_id, delta)
+            except PlacementRecoveryError:
+                self.recovery_required = True
+                self.revision += 1
+                raise
             previous = {item["id"]: item for item in self.model["occurrences"]}
             for item in fresh["occurrences"]:
                 old = previous[item["id"]]
@@ -120,6 +142,8 @@ class ViewerSession:
 
     def export_step(self, expected_revision=None):
         with self.lock:
+            if self.recovery_required:
+                raise RequestError(409, "Placement recovery failed; reimport the source before exporting")
             if self.assembly is None:
                 raise RequestError(409, "Import a STEP assembly first")
             if expected_revision is not None:
@@ -134,8 +158,8 @@ class ViewerServer(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = True
 
-    def __init__(self, address):
-        self.session = ViewerSession()
+    def __init__(self, address, workspace=None):
+        self.session = ViewerSession(workspace)
         try:
             super().__init__(address, ViewerHandler)
         except Exception:
@@ -167,7 +191,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and origin != "http://" + host:
             raise RequestError(403, "Cross-origin requests are not allowed")
-        if self.headers.get("Sec-Fetch-Site") not in (None, "none", "same-origin"):
+        document_navigation = (not mutation and self.command == "GET"
+            and urlsplit(self.path).path == "/"
+            and self.headers.get("Sec-Fetch-Mode") == "navigate"
+            and self.headers.get("Sec-Fetch-Dest") == "document")
+        if self.headers.get("Sec-Fetch-Site") not in (None, "none", "same-origin") and not document_navigation:
             raise RequestError(403, "Cross-site requests are not allowed")
         if mutation and not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), self.server.session.csrf_token):
             raise RequestError(403, "Missing or invalid request token; reload this page")
@@ -189,7 +217,15 @@ class ViewerHandler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(data, allow_nan=False).encode(), "application/json; charset=utf-8")
 
     def _handle_error(self, error):
-        if isinstance(error, RequestError):
+        if isinstance(error, UncertainCheckpoint):
+            self._json(409, {"error": str(error), "code": "uncertain_checkpoint"})
+        elif isinstance(error, StaleCheckpoint):
+            self._json(409, {"error": str(error), "code": "stale_checkpoint"})
+        elif isinstance(error, HistoryError):
+            self._json(400, {"error": str(error), "code": "history_error"})
+        elif isinstance(error, PlacementRecoveryError):
+            self._json(409, {"error": str(error), "code": "recovery_required"})
+        elif isinstance(error, RequestError):
             self._json(error.status, {"error": str(error)})
         elif isinstance(error, (ValueError, KeyError)):
             self._json(400, {"error": str(error)})
@@ -219,6 +255,22 @@ class ViewerHandler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path == "/api/state":
                 self._json(200, self.server.session.state())
+            elif path == "/api/history":
+                query = parse_qs(urlsplit(self.path).query)
+                skip = query.get("skip", ["0"])
+                if len(skip) != 1 or not skip[0].isascii() or not skip[0].isdecimal() or len(skip[0]) > 5:
+                    raise RequestError(400, "Invalid history page")
+                self._json(200, self.server.session.checkpoint_history(int(skip[0])))
+            elif path == "/api/compare":
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                ids, revisions = query.get("checkpoint", []), query.get("revision", [])
+                after = query.get("after", [])
+                if len(ids) != 1 or len(revisions) != 1 or not revisions[0].isascii() or not revisions[0].isdecimal() or len(revisions[0]) > 16:
+                    raise RequestError(400, "Comparison requires one checkpoint and the displayed revision")
+                if "after" in query and (len(after) != 1 or not after[0]):
+                    raise RequestError(400, "Comparison accepts one nonempty after checkpoint")
+                self._json(200, self.server.session.compare_checkpoint(
+                    ids[0], int(revisions[0]), after[0] if after else None))
             elif path == "/api/export":
                 revisions = parse_qs(urlsplit(self.path).query).get("revision", [])
                 if len(revisions) != 1 or len(revisions[0]) > 16 or not revisions[0].isascii() or not revisions[0].isdecimal():
@@ -252,8 +304,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 revision = self.headers.get("X-Revision", "")
                 if len(self.headers.get_all("X-Revision", [])) != 1 or len(revision) > 16 or not revision.isascii() or not revision.isdecimal():
                     raise RequestError(400, "Upload requires the current X-Revision header")
-                state = self.server.session.import_step(self._read_body(MAX_IMPORT_BYTES), name, int(revision))
-            elif path in ("/api/move", "/api/demo"):
+                state = self.server.session.import_step(self._read_body(MAX_IMPORT_BYTES), name, int(revision), self.headers.get("X-Discard-Changes") == "true")
+            elif path in ("/api/move", "/api/demo", "/api/checkpoint", "/api/restore", "/api/project/open"):
                 if content_type != "application/json":
                     raise RequestError(415, "Send application/json")
                 body = self._read_body(MAX_JSON_BYTES)
@@ -265,10 +317,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     raise RequestError(400, "Request must be a JSON object")
                 if path == "/api/move":
                     state = self.server.session.move(request)
+                elif path == "/api/checkpoint":
+                    state = self.server.session.checkpoint(request)
+                elif path == "/api/restore":
+                    state = self.server.session.restore_checkpoint(request)
+                elif path == "/api/project/open":
+                    state = self.server.session.open_project(request)
                 else:
                     if type(request.get("revision")) is not int:
                         raise RequestError(400, "Revision must be an integer")
-                    state = self.server.session.import_step(None, "Two-instance demo.step", request["revision"])
+                    state = self.server.session.import_step(None, "Two-instance demo.step", request["revision"], request.get("discard_changes") is True)
             else:
                 raise RequestError(404, "Not found")
             self._json(200, state)
@@ -277,16 +335,16 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._handle_error(error)
 
 
-def make_server(host="127.0.0.1", port=8000):
+def make_server(host="127.0.0.1", port=8000, workspace=None):
     if host not in ("127.0.0.1", "localhost"):
         raise ValueError("This experimental viewer binds only to loopback; use SSH forwarding for remote access")
-    return ViewerServer((host, port))
+    return ViewerServer((host, port), workspace=workspace)
 
 
-def serve(port=8000):
-    with make_server(port=port) as server:
+def serve(port=8000, workspace=None):
+    with make_server(port=port, workspace=workspace) as server:
         print(f"Daedalus Focus View: http://127.0.0.1:{server.server_port}", flush=True)
-        print("Local session only. Export changes before closing; Ctrl+C stops the server.", flush=True)
+        print("Checkpoints persist in the configured workspace. Save a checkpoint before closing; unsaved movements are transient." if workspace is not None else "Local session only. Export changes before closing; Ctrl+C stops the server.", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

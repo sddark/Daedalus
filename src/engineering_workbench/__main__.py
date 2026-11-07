@@ -97,13 +97,14 @@ def main() -> int:
     demo.add_argument("--output", type=Path, required=True, help="A new output directory; existing directories are refused")
     viewer = commands.add_parser("serve", help="Open a local STEP Focus View in your browser")
     viewer.add_argument("--port", type=int, default=8000, help="Loopback HTTP port (default: 8000)")
+    viewer.add_argument("--workspace", type=Path, default=Path.home() / ".local/share/daedalus/projects", help="Persistent project directory (default: ~/.local/share/daedalus/projects)")
     arguments = parser.parse_args()
     try:
         if arguments.command == "serve":
             from .viewer import serve
             if not 0 <= arguments.port <= 65535:
                 raise ValueError("Port must be between 0 and 65535")
-            serve(arguments.port)
+            serve(arguments.port, workspace=arguments.workspace)
             return 0
         report = run_demo(arguments.output)
     except (OSError, ValueError, RuntimeError) as error:

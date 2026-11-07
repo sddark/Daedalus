@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from OCP.BRep import BRep_Builder
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
 from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS_Compound
@@ -85,3 +85,52 @@ class CurvedMeshTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Instanced display"):
                     display_meshes(StepAssembly.load(boxes))
         self.assertEqual(file_sha256(boxes), source_hash)
+
+
+class SmoothNormalsTests(unittest.TestCase):
+    def test_sphere_normals_are_radial_and_boxes_keep_sharp_corners(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "sphere.step"
+            document = _document()
+            shapes = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+            compound = TopoDS_Compound()
+            BRep_Builder().MakeCompound(compound)
+            root = shapes.AddShape(compound, True)
+            definition = shapes.AddShape(BRepPrimAPI_MakeSphere(10).Shape(), False)
+            shapes.AddComponent(root, definition, TopLoc_Location())
+            shapes.UpdateAssemblies()
+            _write_document(document, source)
+            mesh = next(iter(display_meshes(StepAssembly.load(source)).values()))
+            self.assertEqual(mesh['edges'], [], 'A sphere has no physical boundary edges')
+            self.assertEqual(len(mesh['normals']), len(mesh['positions']))
+            for i in range(0, len(mesh['positions']), 3):
+                point = mesh['positions'][i:i+3]
+                normal = mesh['normals'][i:i+3]
+                self.assertAlmostEqual(math.hypot(*normal), 1)
+                self.assertGreater(sum(p*n for p,n in zip(point, normal))/10, .98)
+            boxes = Path(directory) / "boxes.step"
+            create_two_instance_fixture(boxes)
+            mesh = next(iter(display_meshes(StepAssembly.load(boxes)).values()))
+            self.assertGreater(len(mesh['edges']), 0, 'Box edges must remain visible')
+            for i in range(0, len(mesh['normals']), 3):
+                self.assertEqual(sorted(abs(v) for v in mesh['normals'][i:i+3]), [0,0,1])
+
+
+    def test_cylinder_keeps_rims_but_removes_periodic_seam(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cylinder.step'
+            doc = _document()
+            shapes = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+            compound = TopoDS_Compound()
+            BRep_Builder().MakeCompound(compound)
+            root = shapes.AddShape(compound, True)
+            definition = shapes.AddShape(BRepPrimAPI_MakeCylinder(2, 10).Shape(), False)
+            shapes.AddComponent(root, definition, TopLoc_Location())
+            shapes.UpdateAssemblies()
+            _write_document(doc, path)
+            mesh = next(iter(display_meshes(StepAssembly.load(path)).values()))
+            self.assertGreater(len(mesh['edges']), 0)
+            for i in range(0, len(mesh['edges']), 6):
+                segment = mesh['edges'][i:i+6]
+                self.assertAlmostEqual(segment[2], segment[5])
+                self.assertTrue(abs(segment[2]) < 1e-6 or abs(segment[2]-10) < 1e-6)

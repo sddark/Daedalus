@@ -22,12 +22,13 @@ is now `daedalus`. The older `engineering-workbench` command remains an alias.
 - 64-bit Linux x86_64 or ARM64/aarch64, with **glibc 2.28 or newer**.
 - **CPython 3.11 or 3.12**. Only 3.12 has been executed in the current test host.
 - `cadquery-ocp-novtk==8.0.1.1.0` and its pinned `cadquery-ocp-proxy` dependency.
+- Git for local persistent checkpoints (`git --version`).
 - A WebGL-capable browser for the UI. No Node.js, VTK, KiCad, compiler or
   standalone OCCT installation is required for this wheel-based path.
 
-The app is tested on Linux x86_64. ARM64 wheels and their dependency resolution
-are verified, but actual Pi execution is still pending. macOS/Windows have not
-been tested for this application. 32-bit Pi OS and Alpine/musl are unsupported.
+The app is tested on Linux x86_64 and macOS ARM64 with Python 3.12. Linux ARM64
+wheels and their dependency resolution are verified, but actual Pi execution is
+still pending. The checkpoint store uses POSIX file locking; Windows is unsupported. 32-bit Pi OS and Alpine/musl are unsupported.
 
 **Create a fresh virtual environment.** Do not install the old `cadquery-ocp`
 package alongside `cadquery-ocp-novtk`; they both provide the `OCP` namespace.
@@ -50,7 +51,7 @@ For Bookworm, install these prerequisites if missing:
 
 ```sh
 sudo apt update
-sudo apt install python3-venv python3-pip libgl1 libx11-6 libexpat1 zlib1g libstdc++6 libgcc-s1
+sudo apt install git python3-venv python3-pip libgl1 libx11-6 libexpat1 zlib1g libstdc++6 libgcc-s1
 ```
 
 The no-VTK OCP wheel still links graphics libraries such as libGL and libX11.
@@ -98,6 +99,14 @@ only `Movable` changes position, from `[30,0,0]` to `[40,0,0]` mm.
 
 ## Open the local viewer
 
+Git is required for the persistent project workspace. Imports and explicit
+checkpoints are kept locally at `~/.local/share/daedalus/projects` unless you pass
+`--workspace /absolute/path/to/projects`. Reopen saved projects in the UI after a
+restart. Save a checkpoint before stopping: working movements are not autosaved.
+The app does not publish, push, or configure a Git remote. Keep the workspace on
+local storage and back up its complete project directories.
+
+
 ```sh
 daedalus serve
 ```
@@ -109,12 +118,15 @@ A different port can be selected with `daedalus serve --port 8001`.
 2. Select a direct component in the viewport or list.
 3. Enter X/Y/Z offsets from its imported position, in millimetres along the
    parent assembly's axes, then apply the move.
-4. Compare the original-position outline with the shaded current position.
-5. Export a new STEP download before stopping the server.
+4. Choose Diff to compare translucent imported and current surfaces. Choose Normal
+   to see only the opaque current assembly.
+5. Save a local checkpoint with a short message. Choose a checkpoint to compare
+   its placement with current work, or restore it into working state.
+6. Export a new STEP download when needed. Save a checkpoint before stopping.
 
-The session is kept in memory and a private temporary directory. Browser reloads
-can reconnect while the server runs. Closing the server discards the session.
-It does not save projects, update Git commits or edit your original file.
+Working movements are kept in memory while the server runs. Browser reloads
+reconnect to that session. Saved projects and Git checkpoints survive a restart;
+unsaved movements do not. The original input file is never edited.
 
 Only one top-level assembly and its direct component occurrences are supported.
 A solitary solid and independent selection of nested children are not supported.

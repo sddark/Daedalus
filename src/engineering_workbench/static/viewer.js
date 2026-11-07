@@ -14,6 +14,7 @@ export class AssemblyViewer {
     this.onSelect = onSelect;
     this.frame = 0;
     this.sourceKey = null;
+    this.diffMode = false;
     this.parts = new Map();
     this.geometries = new Map();
     this.scene = new THREE.Scene();
@@ -46,7 +47,9 @@ export class AssemblyViewer {
       selected: new THREE.MeshStandardMaterial({ color: '#80a68c', roughness: 0.75, metalness: 0.08, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }),
       edge: new THREE.LineBasicMaterial({ color: '#6b7e6e', transparent: true, opacity: 0.48 }),
       selectedEdge: new THREE.LineBasicMaterial({ color: '#416950', transparent: true, opacity: 0.8 }),
-      original: new THREE.LineDashedMaterial({ color: '#b8834d', transparent: true, opacity: 0.62, depthTest: false, dashSize: 1, gapSize: 0.65 }),
+      diff: new THREE.MeshStandardMaterial({ color: '#548d72', roughness: 0.8, transparent: true, opacity: 0.45, depthWrite: false, side: THREE.DoubleSide }),
+      diffSelected: new THREE.MeshStandardMaterial({ color: '#287755', roughness: 0.8, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide }),
+      original: new THREE.MeshStandardMaterial({ color: '#d39452', roughness: 0.8, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide }),
     };
     this.raycaster = new THREE.Raycaster();
     let press = null;
@@ -103,6 +106,9 @@ export class AssemblyViewer {
   setModel(model, selectedId) {
     if (!model) {
       this.clearModel();
+      this.model = null;
+      this.comparisonMatrices = null;
+      this.reviewMatrices = null;
       this.sourceKey = null;
       this.render();
       return;
@@ -115,17 +121,12 @@ export class AssemblyViewer {
       for (const [id, data] of Object.entries(model.meshes)) {
         const mesh = new THREE.BufferGeometry();
         mesh.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
-        mesh.computeVertexNormals();
+        if (data.normals?.length === data.positions.length) mesh.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
+        else mesh.computeVertexNormals();
         mesh.computeBoundingBox();
         mesh.computeBoundingSphere();
         const edges = new THREE.BufferGeometry();
         edges.setAttribute('position', new THREE.Float32BufferAttribute(data.edges, 3));
-        // Each segment has its own pair of cumulative distances for dashed outlines.
-        const distances = [];
-        for (let i = 0; i < data.edges.length; i += 6) {
-          distances.push(0, Math.hypot(data.edges[i + 3] - data.edges[i], data.edges[i + 4] - data.edges[i + 1], data.edges[i + 5] - data.edges[i + 2]));
-        }
-        edges.setAttribute('lineDistance', new THREE.Float32BufferAttribute(distances, 1));
         this.geometries.set(id, { mesh, edges });
       }
       for (const occurrence of model.occurrences) {
@@ -133,28 +134,36 @@ export class AssemblyViewer {
         if (!geometry) throw new Error(`Missing display geometry for ${occurrence.name}.`);
         const mesh = new THREE.Mesh(geometry.mesh, this.materials.normal);
         const edges = new THREE.LineSegments(geometry.edges, this.materials.edge);
-        const original = new THREE.LineSegments(geometry.edges, this.materials.original);
+        const original = new THREE.Mesh(geometry.mesh, this.materials.original);
         const group = new THREE.Group();
         mesh.matrixAutoUpdate = edges.matrixAutoUpdate = original.matrixAutoUpdate = false;
         mesh.userData.occurrenceId = occurrence.id;
-        original.renderOrder = 2;
         group.add(mesh, edges, original);
         this.scene.add(group);
         this.parts.set(occurrence.id, { group, mesh, edges, original });
       }
     }
+    if (replacement) { this.comparisonMatrices = null; this.reviewMatrices = null; }
     this.model = model;
     for (const occurrence of model.occurrences) {
       const part = this.parts.get(occurrence.id);
-      part.mesh.matrix.copy(matrixFromRows(occurrence.matrix_3x4));
+      part.mesh.matrix.copy(matrixFromRows(this.reviewMatrices?.[occurrence.id] || occurrence.matrix_3x4));
       part.edges.matrix.copy(part.mesh.matrix);
-      part.original.matrix.copy(matrixFromRows(occurrence.baseline_matrix_3x4));
-      part.original.visible = occurrence.offset_mm.some((value) => Math.abs(value) > 1e-9);
+      part.original.matrix.copy(matrixFromRows(this.comparisonMatrices?.[occurrence.id] || occurrence.baseline_matrix_3x4));
+      part.changed = part.mesh.matrix.elements.some((value, index) => Math.abs(value - part.original.matrix.elements[index]) > 1e-9);
+      part.original.visible = this.diffMode && part.changed;
       part.group.updateMatrixWorld(true);
     }
     this.select(selectedId);
     if (replacement) { this.makeGrid(); this.fit(); }
     this.render();
+  }
+
+  setComparison(matrices, afterMatrices = null) {
+    this.comparisonMatrices = matrices;
+    this.reviewMatrices = afterMatrices;
+    if (this.model) this.setModel(this.model, this.selectedId);
+    // No fit: comparison is display-only and preserves camera and orbit target.
   }
 
   modelBounds() {
@@ -184,13 +193,23 @@ export class AssemblyViewer {
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     this.grid = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ color: '#dce5d8', transparent: true, opacity: 0.45 }));
     this.scene.add(this.grid);
-    this.materials.original.dashSize = span / 110;
-    this.materials.original.gapSize = span / 170;
+  }
+
+  setDiffMode(enabled) {
+    this.diffMode = Boolean(enabled);
+    for (const part of this.parts.values()) part.original.visible = this.diffMode && part.changed;
+    this.select(this.selectedId);
+    // A display-mode switch must not change the user’s camera or orbit target.
+    // Fit remains an explicit action (button / F).
   }
 
   select(id) {
+    this.selectedId = id;
     for (const [occurrenceId, part] of this.parts) {
-      part.mesh.material = occurrenceId === id ? this.materials.selected : this.materials.normal;
+      part.mesh.material = this.diffMode
+        ? (occurrenceId === id ? this.materials.diffSelected : this.materials.diff)
+        : (occurrenceId === id ? this.materials.selected : this.materials.normal);
+      part.edges.visible = !this.diffMode;
       part.edges.material = occurrenceId === id ? this.materials.selectedEdge : this.materials.edge;
     }
     this.render();
